@@ -87,6 +87,10 @@ mono_options = ["OFF", "ON"]
 camera_lock = threading.Lock()
 stream_process = None  # Истинное имя процесса в этом скрипте
 
+# Глобальные переменные
+averaged_frame = None
+alpha = 0.5  # будет меняться в зависимости от stack_size
+
 def generate_frames():
     global averaged_frame, alpha
 

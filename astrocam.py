@@ -94,81 +94,89 @@ stream_process = None  # Истинное имя процесса в этом с
 # Глобальные переменные
 averaged_frame = None
 alpha = 0.5  # будет меняться в зависимости от stack_size
-
+import subprocess
 import time
 import numpy as np
 import cv2
 
 def generate_frames():
-    global averaged_frame, alpha
+    global averaged_frame, alpha, camera_lock, cam_params
 
     while True:
-        raw_frame = None
-        
-        # 1. Быстро забираем кадр под блокировкой и сразу её отпускаем
+        # 1. Быстро копируем параметры камеры под блокировкой, чтобы не задерживать другие потоки
         with camera_lock:
-           cmd = [
-                "rpicam-still", "-t", "1",
-                "--width", "640", "--height", "480",
-                "--shutter", str(cam_params["preview_shutter"]),
-                "--gain", str(cam_params["preview_gain"]),
-                "--immediate", "-o", "-"
-            ]
-            if cam_params["flip"] in ["VERT", "BOTH"]:
-                cmd.append("--vflip")
-            if cam_params["flip"] in ["HORIZ", "BOTH"]:
-                cmd.append("--hflip")
-            
-            # ===== НОВЫЙ БЛОК (вставьте сюда) =====
-            cmd.extend(["--brightness", str(cam_params["brightness"])])
-            cmd.extend(["--contrast", str(cam_params["contrast"])])
-            cmd.extend(["--saturation", str(cam_params["saturation"])])
-            cmd.extend(["--denoise", cam_params["denoise"]])
-            cmd.extend(["--ev", str(cam_params["ev"])])
-            cmd.extend(["--awb", cam_params["awb"]])
-            # ===== КОНЕЦ НОВОГО БЛОКА =====
+            shutter = str(cam_params["preview_shutter"])
+            gain = str(cam_params["preview_gain"])
+            flip_mode = cam_params["flip"]
+            brightness = str(cam_params["brightness"])
+            contrast = str(cam_params["contrast"])
+            saturation = str(cam_params["saturation"])
+            denoise = cam_params["denoise"]
+            ev = str(cam_params["ev"])
+            awb = cam_params["awb"]
+            is_mono = cam_params["mono"] == "ON"
 
-            if cam_params["mono"] == "ON":
-                # Переопределяем насыщенность и шумоподавление для ч/б режима
-                cmd.extend(["--saturation", "0.0", "--denoise", "off"])
+        # 2. Формируем команду (уже вне camera_lock)
+        cmd = [
+            "rpicam-still", "-t", "1",
+            "--width", "640", "--height", "480",
+            "--shutter", shutter,
+            "--gain", gain,
+            "--immediate", "-o", "-"
+        ]
+        
+        if flip_mode in ["VERT", "BOTH"]:
+            cmd.append("--vflip")
+        if flip_mode in ["HORIZ", "BOTH"]:
+            cmd.append("--hflip")
+        
+        cmd.extend(["--brightness", brightness])
+        cmd.extend(["--contrast", contrast])
+        cmd.extend(["--saturation", "0.0" if is_mono else saturation])
+        cmd.extend(["--denoise", "off" if is_mono else denoise])
+        cmd.extend(["--ev", ev])
+        cmd.extend(["--awb", awb])
 
+        # 3. Запускаем тяжелый процесс захвата (вне camera_lock!)
+        try:
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            frame, _ = process.communicate()
-            
-        # 2. Если кадр не захвачен, делаем паузу и пробуем снова БЕЗ блокировки
-        if not raw_frame:
-            time.sleep(0.04)
+            raw_frame, _ = process.communicate()
+        except Exception as e:
+            print(f"Ошибка вызова rpicam-still: {e}")
+            time.sleep(1)
             continue
 
-        final_frame = None
+        # 4. Если кадр получен, обрабатываем его (магия EWMA-сглаживания)
+        if raw_frame:
+            # Декодируем байты в картинку OpenCV
+            np_frame = np.frombuffer(raw_frame, dtype=np.uint8)
+            # Если режим монохромный, декодируем как GrayScale для скорости
+            decode_mode = cv2.IMREAD_GRAYSCALE if is_mono else cv2.IMREAD_COLOR
+            img_array = cv2.imdecode(np_frame, decode_mode)
 
-        # 3. Вся тяжелая обработка идет ВНЕ camera_lock
-        np_frame = np.frombuffer(raw_frame, dtype=np.uint8)
-        img_array = cv2.imdecode(np_frame, cv2.IMREAD_COLOR)
-        
-        if img_array is not None:
-            # Инициализация или обновление усреднённого кадра
-            if averaged_frame is None:
-                averaged_frame = img_array.astype(np.float32)
+            if img_array is not None:
+                # Инициализация или накопление скользящего среднего
+                if averaged_frame is None or averaged_frame.shape != img_array.shape:
+                    # Если поменялся размер или режим (цвет/чб), переинициализируем
+                    averaged_frame = img_array.astype(np.float32)
+                else:
+                    # Быстрое сглаживание средствами OpenCV
+                    cv2.accumulateWeighted(img_array, averaged_frame, alpha)
+                
+                # Конвертируем обратно в uint8
+                display_frame = cv2.convertScaleAbs(averaged_frame)
+                
+                # Кодируем сглаженный кадр обратно в JPEG
+                _, encoded = cv2.imencode('.jpg', display_frame)
+                final_frame = encoded.tobytes()
             else:
-                # Формула EWMA
-                cv2.accumulateWeighted(img_array, averaged_frame, alpha)
-            
-            # Преобразуем обратно в uint8
-            display_frame = cv2.convertScaleAbs(averaged_frame)
-            
-            # Кодируем в JPEG
-            _, encoded = cv2.imencode('.jpg', display_frame)
-            final_frame = encoded.tobytes()
-        else:
-            # Если декодирование не удалось, отдаем сырой кадр (если он jpeg)
-            final_frame = raw_frame
+                # Если OpenCV не смог декодировать, отдаем сырой кадр от rpicam
+                final_frame = raw_frame
 
-        # 4. Отправляем готовый кадр в поток
-        if final_frame:
+            # 5. Отправляем в MJPEG поток
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + final_frame + b'\r\n')
-            
+        
         time.sleep(0.04)
 
 

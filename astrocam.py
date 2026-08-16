@@ -11,6 +11,11 @@ from luma.core.render import canvas
 from luma.oled.device import sh1106
 from PIL import ImageFont
 
+from gpiozero.pins.lgpio import LGPIOFactory
+from gpiozero import Device
+
+Device.pin_factory = LGPIOFactory()
+
 # --- Глобальные переменные для накопления ---
 # Количество кадров для усреднения (регулируемый параметр)
 STACK_SIZE = 10  # Начните с 10, можно будет менять через меню

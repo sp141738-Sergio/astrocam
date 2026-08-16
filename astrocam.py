@@ -185,8 +185,8 @@ def generate_frames():
                 final_frame = encoded.tobytes()
 
                  # Кодируем сглаженный кадр обратно в JPEG
-                _, encoded = cv2.imencode('.jpg', display_frame)
-                final_frame = encoded.tobytes()
+                #_, encoded = cv2.imencode('.jpg', display_frame)
+                #final_frame = encoded.tobytes()
             else:
                 # Если OpenCV не смог декодировать, отдаем сырой кадр от rpicam
                 final_frame = raw_frame

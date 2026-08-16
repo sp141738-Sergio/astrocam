@@ -23,6 +23,7 @@ frame_counter = 0
 STACK_SIZE = 5   # можно регулировать через меню
 averaged_frame = None
 alpha = 0.5  # будет меняться в зависимости от stack_size
+camera_lock = threading.Lock()
 
 print("Starting AstroCam All-in-One...")
 

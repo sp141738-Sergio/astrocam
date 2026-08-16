@@ -83,10 +83,12 @@ mono_options = ["OFF", "ON"]
 camera_lock = threading.Lock()
 stream_process = None  # Истинное имя процесса в этом скрипте
 
-
 def generate_frames():
+    global frame_accumulator, frame_counter, STACK_SIZE
+
     while True:
         with camera_lock:
+            # --- 1. Захват кадра ---
             cmd = [
                 "rpicam-still", "-t", "1",
                 "--width", "640", "--height", "480",
@@ -98,63 +100,58 @@ def generate_frames():
                 cmd.append("--vflip")
             if cam_params["flip"] in ["HORIZ", "BOTH"]:
                 cmd.append("--hflip")
-            
-            # ===== НОВЫЙ БЛОК (вставьте сюда) =====
             cmd.extend(["--brightness", str(cam_params["brightness"])])
             cmd.extend(["--contrast", str(cam_params["contrast"])])
             cmd.extend(["--saturation", str(cam_params["saturation"])])
             cmd.extend(["--denoise", cam_params["denoise"]])
             cmd.extend(["--ev", str(cam_params["ev"])])
             cmd.extend(["--awb", cam_params["awb"]])
-            # ===== КОНЕЦ НОВОГО БЛОКА =====
-
             if cam_params["mono"] == "ON":
-                # Переопределяем насыщенность и шумоподавление для ч/б режима
                 cmd.extend(["--saturation", "0.0", "--denoise", "off"])
 
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             frame, _ = process.communicate()
 
+        # --- 2. Обработка кадра ---
         if frame:
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            # Декодируем JPEG в массив OpenCV (BGR)
             np_frame = np.frombuffer(frame, dtype=np.uint8)
             img_array = cv2.imdecode(np_frame, cv2.IMREAD_COLOR)
 
             if img_array is not None:
-                    # 2. Инициализируем накопитель, если он пуст
-                    if frame_accumulator is None:
-                        frame_accumulator = np.zeros(img_array.shape, dtype=np.float32)
-                    
-                    # 3. Добавляем текущий кадр к накопителю
-                    frame_accumulator += img_array.astype(np.float32)
-                    frame_counter += 1
+                # Инициализируем накопитель, если пуст
+                if frame_accumulator is None:
+                    frame_accumulator = np.zeros(img_array.shape, dtype=np.float32)
 
-                    # 4. Если накопилось достаточно кадров, усредняем
-                    if frame_counter >= STACK_SIZE:
-                        # Вычисляем усредненный кадр
-                        averaged_array = (frame_accumulator / STACK_SIZE).astype(np.uint8)
-                        
-                        # Сбрасываем накопитель для следующей партии кадров
-                        frame_accumulator = None
-                        frame_counter = 0
-                    else:
-                        # Если накопилось мало, показываем исходный кадр
-                        averaged_array = img_array
-                    
-                    # 5. Кодируем усредненный кадр обратно в JPEG
-                    _, encoded_frame = cv2.imencode('.jpg', averaged_array)
-                    final_frame = encoded_frame.tobytes()
+                # Добавляем текущий кадр в накопитель
+                frame_accumulator += img_array.astype(np.float32)
+                frame_counter += 1
+
+                # Если накопилось достаточно кадров — усредняем
+                if frame_counter >= STACK_SIZE:
+                    averaged_array = (frame_accumulator / STACK_SIZE).astype(np.uint8)
+                    # Сбрасываем накопитель для следующей партии
+                    frame_accumulator = None
+                    frame_counter = 0
+                else:
+                    # Показываем исходный кадр (без усреднения)
+                    averaged_array = img_array
+
+                # Кодируем результат в JPEG
+                _, encoded = cv2.imencode('.jpg', averaged_array)
+                final_frame = encoded.tobytes()
             else:
-                    final_frame = frame
-        else:
+                # Если декодирование не удалось — используем исходный байтовый буфер
                 final_frame = frame
+        else:
+            # Если кадр пустой — пропускаем
+            continue
 
-            if final_frame:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + final_frame + b'\r\n')
+        # --- 3. Отправка в HTTP-поток ---
+        if final_frame:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + final_frame + b'\r\n')
         time.sleep(0.04)
-
 
 @app.route('/')
 def index():

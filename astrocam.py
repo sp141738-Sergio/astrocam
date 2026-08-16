@@ -107,7 +107,33 @@ def generate_frames():
         
         # 1. Быстро забираем кадр под блокировкой и сразу её отпускаем
         with camera_lock:
-            # ... захват кадра в raw_frame ...
+           cmd = [
+                "rpicam-still", "-t", "1",
+                "--width", "640", "--height", "480",
+                "--shutter", str(cam_params["preview_shutter"]),
+                "--gain", str(cam_params["preview_gain"]),
+                "--immediate", "-o", "-"
+            ]
+            if cam_params["flip"] in ["VERT", "BOTH"]:
+                cmd.append("--vflip")
+            if cam_params["flip"] in ["HORIZ", "BOTH"]:
+                cmd.append("--hflip")
+            
+            # ===== НОВЫЙ БЛОК (вставьте сюда) =====
+            cmd.extend(["--brightness", str(cam_params["brightness"])])
+            cmd.extend(["--contrast", str(cam_params["contrast"])])
+            cmd.extend(["--saturation", str(cam_params["saturation"])])
+            cmd.extend(["--denoise", cam_params["denoise"]])
+            cmd.extend(["--ev", str(cam_params["ev"])])
+            cmd.extend(["--awb", cam_params["awb"]])
+            # ===== КОНЕЦ НОВОГО БЛОКА =====
+
+            if cam_params["mono"] == "ON":
+                # Переопределяем насыщенность и шумоподавление для ч/б режима
+                cmd.extend(["--saturation", "0.0", "--denoise", "off"])
+
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            frame, _ = process.communicate()
             raw_frame = frame  # Имитация вашей строки захвата
 
         # 2. Если кадр не захвачен, делаем паузу и пробуем снова БЕЗ блокировки

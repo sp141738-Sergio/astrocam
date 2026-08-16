@@ -94,37 +94,57 @@ stream_process = None  # Истинное имя процесса в этом с
 averaged_frame = None
 alpha = 0.5  # будет меняться в зависимости от stack_size
 
+import time
+import numpy as np
+import cv2
+
 def generate_frames():
     global averaged_frame, alpha
 
     while True:
-        frame = None
+        raw_frame = None
+        
+        # 1. Быстро забираем кадр под блокировкой и сразу её отпускаем
         with camera_lock:
-            # ... захват кадра в frame ...
-            if frame:
-                np_frame = np.frombuffer(frame, dtype=np.uint8)
-                img_array = cv2.imdecode(np_frame, cv2.IMREAD_COLOR)
-                if img_array is not None:
-                    # Инициализация усреднённого кадра
-                    if averaged_frame is None:
-                        averaged_frame = img_array.astype(np.float32)
-                    else:
-                        # Обновляем усреднённый кадр по формуле EWMA
-                        averaged_frame = averaged_frame * (1 - alpha) + img_array.astype(np.float32) * alpha
-                    # Преобразуем обратно в uint8 для отображения
-                    display_frame = averaged_frame.astype(np.uint8)
-                    # Кодируем в JPEG
-                    _, encoded = cv2.imencode('.jpg', display_frame)
-                    final_frame = encoded.tobytes()
-                else:
-                    final_frame = frame
-            else:
-                continue
+            # ... захват кадра в raw_frame ...
+            raw_frame = frame  # Имитация вашей строки захвата
 
-            if final_frame:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + final_frame + b'\r\n')
+        # 2. Если кадр не захвачен, делаем паузу и пробуем снова БЕЗ блокировки
+        if not raw_frame:
+            time.sleep(0.04)
+            continue
+
+        final_frame = None
+
+        # 3. Вся тяжелая обработка идет ВНЕ camera_lock
+        np_frame = np.frombuffer(raw_frame, dtype=np.uint8)
+        img_array = cv2.imdecode(np_frame, cv2.IMREAD_COLOR)
+        
+        if img_array is not None:
+            # Инициализация или обновление усреднённого кадра
+            if averaged_frame is None:
+                averaged_frame = img_array.astype(np.float32)
+            else:
+                # Формула EWMA
+                cv2.accumulateWeighted(img_array, averaged_frame, alpha)
+            
+            # Преобразуем обратно в uint8
+            display_frame = cv2.convertScaleAbs(averaged_frame)
+            
+            # Кодируем в JPEG
+            _, encoded = cv2.imencode('.jpg', display_frame)
+            final_frame = encoded.tobytes()
+        else:
+            # Если декодирование не удалось, отдаем сырой кадр (если он jpeg)
+            final_frame = raw_frame
+
+        # 4. Отправляем готовый кадр в поток
+        if final_frame:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + final_frame + b'\r\n')
+            
         time.sleep(0.04)
+
 
 @app.route('/')
 def index():

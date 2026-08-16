@@ -18,9 +18,8 @@ Device.pin_factory = LGPIOFactory()
 
 # --- Глобальные переменные для накопления ---
 # Количество кадров для усреднения (регулируемый параметр)
-STACK_SIZE = 10  # Начните с 10, можно будет менять через меню
-frame_accumulator = None  # Будет хранить сумму кадров
-frame_counter = 0
+averaged_frame = None
+alpha = 0.5  # будет меняться в зависимости от stack_size
 
 print("Starting AstroCam All-in-One...")
 
@@ -89,73 +88,34 @@ camera_lock = threading.Lock()
 stream_process = None  # Истинное имя процесса в этом скрипте
 
 def generate_frames():
-    global frame_accumulator, frame_counter, STACK_SIZE
+    global averaged_frame, alpha
 
     while True:
         with camera_lock:
-            # --- 1. Захват кадра ---
-            cmd = [
-                "rpicam-still", "-t", "1",
-                "--width", "640", "--height", "480",
-                "--shutter", str(cam_params["preview_shutter"]),
-                "--gain", str(cam_params["preview_gain"]),
-                "--immediate", "-o", "-"
-            ]
-            if cam_params["flip"] in ["VERT", "BOTH"]:
-                cmd.append("--vflip")
-            if cam_params["flip"] in ["HORIZ", "BOTH"]:
-                cmd.append("--hflip")
-            cmd.extend(["--brightness", str(cam_params["brightness"])])
-            cmd.extend(["--contrast", str(cam_params["contrast"])])
-            cmd.extend(["--saturation", str(cam_params["saturation"])])
-            cmd.extend(["--denoise", cam_params["denoise"]])
-            cmd.extend(["--ev", str(cam_params["ev"])])
-            cmd.extend(["--awb", cam_params["awb"]])
-            if cam_params["mono"] == "ON":
-                cmd.extend(["--saturation", "0.0", "--denoise", "off"])
-
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            frame, _ = process.communicate()
-
-        # --- 2. Обработка кадра ---
-        if frame:
-            # Декодируем JPEG в массив OpenCV (BGR)
-            np_frame = np.frombuffer(frame, dtype=np.uint8)
-            img_array = cv2.imdecode(np_frame, cv2.IMREAD_COLOR)
-
-            if img_array is not None:
-                # Инициализируем накопитель, если пуст
-                if frame_accumulator is None:
-                    frame_accumulator = np.zeros(img_array.shape, dtype=np.float32)
-
-                # Добавляем текущий кадр в накопитель
-                frame_accumulator += img_array.astype(np.float32)
-                frame_counter += 1
-
-                # Если накопилось достаточно кадров — усредняем
-                if frame_counter >= STACK_SIZE:
-                    averaged_array = (frame_accumulator / STACK_SIZE).astype(np.uint8)
-                    # Сбрасываем накопитель для следующей партии
-                    frame_accumulator = None
-                    frame_counter = 0
+            # ... захват кадра в frame ...
+            if frame:
+                np_frame = np.frombuffer(frame, dtype=np.uint8)
+                img_array = cv2.imdecode(np_frame, cv2.IMREAD_COLOR)
+                if img_array is not None:
+                    # Инициализация усреднённого кадра
+                    if averaged_frame is None:
+                        averaged_frame = img_array.astype(np.float32)
+                    else:
+                        # Обновляем усреднённый кадр по формуле EWMA
+                        averaged_frame = averaged_frame * (1 - alpha) + img_array.astype(np.float32) * alpha
+                    # Преобразуем обратно в uint8 для отображения
+                    display_frame = averaged_frame.astype(np.uint8)
+                    # Кодируем в JPEG
+                    _, encoded = cv2.imencode('.jpg', display_frame)
+                    final_frame = encoded.tobytes()
                 else:
-                    # Показываем исходный кадр (без усреднения)
-                    averaged_array = img_array
-
-                # Кодируем результат в JPEG
-                _, encoded = cv2.imencode('.jpg', averaged_array)
-                final_frame = encoded.tobytes()
+                    final_frame = frame
             else:
-                # Если декодирование не удалось — используем исходный байтовый буфер
-                final_frame = frame
-        else:
-            # Если кадр пустой — пропускаем
-            continue
+                continue
 
-        # --- 3. Отправка в HTTP-поток ---
-        if final_frame:
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + final_frame + b'\r\n')
+            if final_frame:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + final_frame + b'\r\n')
         time.sleep(0.04)
 
 @app.route('/')
@@ -358,12 +318,10 @@ def on_rotate():
         elif active_param == "Denoise":
             cam_params["denoise"] = "off" if cam_params["denoise"] == "on" else "on"
         elif active_param == "Stack Size":
-            # Меняем значение от 2 до 30 (или любого другого предела)
             new_size = cam_params["stack_size"] - steps
             cam_params["stack_size"] = max(2, min(30, new_size))
-            # Обновляем глобальную переменную для использования в generate_frames
-            global STACK_SIZE
-            STACK_SIZE = cam_params["stack_size"]
+            global alpha
+            alpha = 1.0 / cam_params["stack_size"]
         elif active_param == "Show IP":
             # Ничего не делаем, просто прокручиваем мимо
             pass

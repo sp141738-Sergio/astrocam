@@ -98,6 +98,7 @@ def generate_frames():
     global averaged_frame, alpha
 
     while True:
+        frame = None
         with camera_lock:
             # ... захват кадра в frame ...
             if frame:

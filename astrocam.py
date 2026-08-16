@@ -134,8 +134,7 @@ def generate_frames():
 
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             frame, _ = process.communicate()
-            raw_frame = frame  # Имитация вашей строки захвата
-
+            
         # 2. Если кадр не захвачен, делаем паузу и пробуем снова БЕЗ блокировки
         if not raw_frame:
             time.sleep(0.04)

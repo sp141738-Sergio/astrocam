@@ -1,4 +1,4 @@
-import os
+    import os
 import time
 import threading
 import subprocess
@@ -165,8 +165,26 @@ def generate_frames():
                 
                 # Конвертируем обратно в uint8
                 display_frame = cv2.convertScaleAbs(averaged_frame)
-                
-                # Кодируем сглаженный кадр обратно в JPEG
+                # --- Склейка двух кадров вертикально ---
+                # Убедимся, что оба кадра имеют одинаковую ширину и количество каналов
+                # Если img_array цветной (3 канала), а averaged_frame ч/б (1 канал) — преобразуем
+                if is_mono:
+                    # Оба кадра ч/б — можно склеивать напрямую
+                    combined = np.vstack((img_array, display_frame))
+                else:
+                    # Если img_array цветной, а display_frame тоже цветной (3 канала)
+                    # В вашем случае display_frame сохраняет цветность, так как averaged_frame инициализирован от img_array
+                    combined = np.vstack((img_array, display_frame))
+
+                # (Опционально) Добавить подписи:
+                cv2.putText(combined, "Original", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+                cv2.putText(combined, "Smoothed", (10, img_array.shape[0] + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+
+                # Теперь кодируем объединённый кадр
+                _, encoded = cv2.imencode('.jpg', combined)
+                final_frame = encoded.tobytes()
+
+                 # Кодируем сглаженный кадр обратно в JPEG
                 _, encoded = cv2.imencode('.jpg', display_frame)
                 final_frame = encoded.tobytes()
             else:

@@ -73,8 +73,8 @@ cam_params = {
     "saturation": 1.0,
     "ev": 0.0,
     "awb": "auto",
-    "denoise": "on"   # on / off
-    "stack_size": 5,  # Количество кадров для усреднения
+    "denoise": "on",   # on / off
+    "stack_size": 5  # Количество кадров для усреднения
 }
 
 flip_options = ["NONE", "VERT", "HORIZ", "BOTH"]
